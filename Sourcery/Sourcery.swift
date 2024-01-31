@@ -246,11 +246,32 @@ public class Sourcery {
 
 }
 
+fileprivate enum TemplateCache {
+    
+    static let queue = DispatchQueue(label: "CacheQueue", attributes: .concurrent)
+    
+    private static var loadedTemplates = [String: Template]()
+    
+    static func template(for path: String) -> Template? {
+        queue.sync() {
+            loadedTemplates[path]
+        }
+    }
+    
+    static func addTemplate(_ template: Template, for path: String) {
+        queue.async(flags: .barrier) {
+            loadedTemplates[path] = template
+        }
+    }
+}
+
 #if canImport(ObjectiveC)
 private extension Sourcery {
     func templates(from: Paths) throws -> [Template] {
         return try templatePaths(from: from).compactMap {
-            if $0.extension == "sourcerytemplate" {
+            if let template = TemplateCache.template(for: $0.string) {
+                return template
+            } else if $0.extension == "sourcerytemplate" {
                 let template = try JSONDecoder().decode(SourceryTemplate.self, from: $0.read())
                 switch template.instance.kind {
                 case .ejs:
@@ -258,21 +279,31 @@ private extension Sourcery {
                         Log.warning("Skipping template \($0). JavaScript templates require EJS path to be set manually when using Sourcery built with Swift Package Manager. Use `--ejsPath` command line argument to set it.")
                         return nil
                     }
-                    return try JavaScriptTemplate(path: $0, templateString: template.instance.content, ejsPath: ejsPath)
+                    let result = try JavaScriptTemplate(path: $0, templateString: template.instance.content, ejsPath: ejsPath)
+                    TemplateCache.addTemplate(result, for: $0.string)
+                    return result
                 case .stencil:
-                    return try StencilTemplate(path: $0, templateString: template.instance.content)
+                    let result = try StencilTemplate(path: $0, templateString: template.instance.content)
+                    TemplateCache.addTemplate(result, for: $0.string)
+                    return result
                 }
             } else if $0.extension == "swifttemplate" {
                 let cachePath = cachesDir(sourcePath: $0)
-                return try SwiftTemplate(path: $0, cachePath: cachePath, version: type(of: self).version, buildPath: buildPath)
+                let result = try SwiftTemplate(path: $0, cachePath: cachePath, version: type(of: self).version, buildPath: buildPath)
+                TemplateCache.addTemplate(result, for: $0.string)
+                return result
             } else if $0.extension == "ejs" {
                 guard let ejsPath = EJSTemplate.ejsPath else {
                     Log.warning("Skipping template \($0). JavaScript templates require EJS path to be set manually when using Sourcery built with Swift Package Manager. Use `--ejsPath` command line argument to set it.")
                     return nil
                 }
-                return try JavaScriptTemplate(path: $0, ejsPath: ejsPath)
+                let result = try JavaScriptTemplate(path: $0, ejsPath: ejsPath)
+                TemplateCache.addTemplate(result, for: $0.string)
+                return result
             } else {
-                return try StencilTemplate(path: $0)
+                let result = try StencilTemplate(path: $0)
+                TemplateCache.addTemplate(result, for: $0.string)
+                return result
             }
         }
     }
